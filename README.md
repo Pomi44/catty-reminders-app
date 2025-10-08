@@ -123,7 +123,7 @@ Run tests with verbose output:
 python3 -m pytest -v --browser chromium tests
 ```
 
-## Reading the docs
+## Reading the docs TEST1
 
 To read the API docs, open the following pages:
 
