@@ -16,7 +16,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: course.prafdin.ru
-          username: Pomi44
+          username: hassiy
           port: 2472
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script_stop: true
