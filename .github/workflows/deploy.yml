@@ -38,27 +38,32 @@ jobs:
           script: |
             set -euxo pipefail
 
+            OWNER_LC="$(echo 'pomi44' | tr '[:upper:]' '[:lower:]')"
+            IMAGE="ghcr.io/${OWNER_LC}/catty-reminders-app:latest"
+
             echo "🔐 Logging in to GHCR..."
-            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u pomi44 --password-stdin
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${OWNER_LC}" --password-stdin
+            echo "✅ GHCR login ok"
 
             echo "🧹 Removing containers that use port 8181 (if any)..."
-            mapfile -t PID_8181 < <(docker ps --format '{{.ID}} {{.Ports}}' | awk '$0 ~ /:8181->/ {print $1}')
-            if [ "${#PID_8181[@]}" -gt 0 ]; then
-              echo "Found containers on 8181: ${PID_8181[*]}"
-              docker rm -f "${PID_8181[@]}"
-            else
-              echo "No containers using 8181 found."
-            fi
+            docker ps --format '{{.ID}} {{.Ports}}' \
+            | awk '$0 ~ /:8181->/ {print $1}' \
+            | xargs -r docker rm -f || true
 
             echo "⬇️ Pulling latest Docker image..."
-            docker pull ghcr.io/pomi44/catty-reminders-app:latest
+            docker pull "${IMAGE}"
+
+            echo "🔎 Pulled images:"
+            docker image ls "${IMAGE%:*}" --digests
 
             echo "🚀 Starting new container..."
-            docker run -d --name catty-reminders -p 8181:8181 --restart=always ghcr.io/pomi44/catty-reminders-app:latest
+            docker run -d --name catty-reminders -p 8181:8181 --restart=always "${IMAGE}"
 
             echo "🩺 Checking container health..."
             sleep 3
             curl -sI http://127.0.0.1:8181/ || true
-            docker ps
+
+            echo "📦 Running containers:"
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
 
             echo "✅ Deployment complete!"
