@@ -38,6 +38,7 @@ jobs:
           script: |
             set -euxo pipefail
 
+            # всегда lowercase для пути образа на GHCR
             OWNER_LC="$(echo 'pomi44' | tr '[:upper:]' '[:lower:]')"
             IMAGE="ghcr.io/${OWNER_LC}/catty-reminders-app:latest"
 
@@ -47,13 +48,13 @@ jobs:
 
             echo "🧹 Removing containers that use port 8181 (if any)..."
             docker ps --format '{{.ID}} {{.Ports}}' \
-            | awk '$0 ~ /:8181->/ {print $1}' \
-            | xargs -r docker rm -f || true
+              | awk '$0 ~ /:8181->/ {print $1}' \
+              | xargs -r docker rm -f
 
             echo "⬇️ Pulling latest Docker image..."
             docker pull "${IMAGE}"
 
-            echo "🔎 Pulled images:"
+            echo "🔎 Pulled images (with digests):"
             docker image ls "${IMAGE%:*}" --digests
 
             echo "🚀 Starting new container..."
