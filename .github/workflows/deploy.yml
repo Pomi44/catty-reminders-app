@@ -1,30 +1,64 @@
-name: CD
+name: CD Deploy
 
 on:
-
   release:
     types: [published]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Deploy over SSH
+    steps:
+      - name: Check SSH_PRIVATE_KEY_B64
+        run: |
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY_B64 }}" ]; then
+            echo "❌ SSH_PRIVATE_KEY_B64 is empty or not visible to this job"; exit 1;
+          fi
+          echo "✅ SSH_PRIVATE_KEY_B64 length: $(echo '${{ secrets.SSH_PRIVATE_KEY_B64 }}' | wc -c) bytes"
+
+      - name: Decode SSH key and test connection
+        shell: bash
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY_B64 }}" | base64 -d > key.pem
+          chmod 600 key.pem
+          echo "🔑 Testing SSH connection..."
+          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru 'echo "✅ SSH connection OK"'
+
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: course.prafdin.ru
           username: hassiy
           port: 2472
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          key_path: key.pem
           script_stop: true
           timeout: 60s
           command_timeout: 10m
           debug: true
           script: |
             set -euxo pipefail
-            systemctl is-active frpc || echo "frpc is not active (ok for CI step)"
-            cd /home/hassiy/OIS
-            bash -x ./deploy.sh
+
+            echo "🔐 Logging in to GHCR..."
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u pomi44 --password-stdin
+
+            echo "🧹 Removing containers that use port 8181 (if any)..."
+            mapfile -t PID_8181 < <(docker ps --format '{{.ID}} {{.Ports}}' | awk '$0 ~ /:8181->/ {print $1}')
+            if [ "${#PID_8181[@]}" -gt 0 ]; then
+              echo "Found containers on 8181: ${PID_8181[*]}"
+              docker rm -f "${PID_8181[@]}"
+            else
+              echo "No containers using 8181 found."
+            fi
+
+            echo "⬇️ Pulling latest Docker image..."
+            docker pull ghcr.io/pomi44/catty-reminders-app:latest
+
+            echo "🚀 Starting new container..."
+            docker run -d --name catty-reminders -p 8181:8181 --restart=always ghcr.io/pomi44/catty-reminders-app:latest
+
+            echo "🩺 Checking container health..."
+            sleep 3
+            curl -sI http://127.0.0.1:8181/ || true
+            docker ps
+
+            echo "✅ Deployment complete!"
