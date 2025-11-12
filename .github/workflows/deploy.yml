@@ -38,33 +38,58 @@ jobs:
           script: |
             set -euxo pipefail
 
-            # всегда lowercase для пути образа на GHCR
+            # Всегда lowercase для GHCR
             OWNER_LC="$(echo 'pomi44' | tr '[:upper:]' '[:lower:]')"
             IMAGE="ghcr.io/${OWNER_LC}/catty-reminders-app:latest"
 
             echo "🔐 Logging in to GHCR..."
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${OWNER_LC}" --password-stdin
-            echo "✅ GHCR login ok"
+            echo "✅ GHCR login successful"
 
-            echo "🧹 Removing containers that use port 8181 (if any)..."
+            echo "🛑 Stopping systemd service (if exists)"
+            sudo systemctl stop catty-reminders.service 2>/dev/null || true
+            sudo systemctl disable catty-reminders.service 2>/dev/null || true
+
+            echo "🧹 Removing existing container (if any)"
+            docker rm -f catty-reminders 2>/dev/null || true
+
+            echo "🧹 Removing containers using port 8181 (if any)"
             docker ps --format '{{.ID}} {{.Ports}}' \
               | awk '$0 ~ /:8181->/ {print $1}' \
               | xargs -r docker rm -f
 
+            echo "🔪 Killing non-Docker processes using port 8181 (if any)"
+            sudo -n fuser -k 8181/tcp 2>/dev/null || true
+            (sudo -n lsof -ti :8181 2>/dev/null || true) | xargs -r sudo -n kill -9 || true
+
+            echo "⏳ Waiting for port 8181 to be free..."
+            for i in {1..20}; do
+              if ss -ltn '( sport = :8181 )' | grep -q 8181; then
+                sleep 1
+              else
+                break
+              fi
+            done
+
             echo "⬇️ Pulling latest Docker image..."
             docker pull "${IMAGE}"
 
-            echo "🔎 Pulled images (with digests):"
+            echo "🔎 Pulled images with digests:"
             docker image ls "${IMAGE%:*}" --digests
 
             echo "🚀 Starting new container..."
             docker run -d --name catty-reminders -p 8181:8181 --restart=always "${IMAGE}"
 
             echo "🩺 Checking container health..."
-            sleep 3
-            curl -sI http://127.0.0.1:8181/ || true
+            for i in {1..15}; do
+              if curl -fsS http://127.0.0.1:8181/ >/dev/null; then
+                echo "✅ App is running"
+                break
+              fi
+              sleep 1
+            done || true
 
-            echo "📦 Running containers:"
+            echo "📦 Active containers:"
             docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
 
             echo "✅ Deployment complete!"
