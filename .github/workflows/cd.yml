@@ -14,58 +14,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Decode SSH key and test SSH
-        shell: bash
-        run: |
-          if [ -z "${{ secrets.SSH_PRIVATE_KEY_B64 }}" ]; then
-            echo "❌ SSH_PRIVATE_KEY_B64 is empty"; exit 1;
-          fi
-          echo "${{ secrets.SSH_PRIVATE_KEY_B64 }}" | base64 -d > key.pem
-          chmod 600 key.pem
-          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru 'echo "✅ SSH OK"'
+      # Поднимем ssh-agent и загрузим приватный ключ из секретов
+      - name: Start ssh-agent and add key
+        uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
+      # Общие переменные
       - name: Set variables
         run: |
-          echo "OWNER_LC=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "OWNER_LOWER=${OWNER_LOWER}" >> $GITHUB_ENV
+          echo "IMAGE_NAME=ghcr.io/${OWNER_LOWER}/catty-reminders-app:latest" >> $GITHUB_ENV
           echo "APP_DIR=/home/hassiy/apps/catty-reminders-app" >> $GITHUB_ENV
+          echo "SERVER_USER=hassiy" >> $GITHUB_ENV
+          echo "SERVER_HOST=course.prafdin.ru" >> $GITHUB_ENV
+          echo "SERVER_PORT=2472" >> $GITHUB_ENV
 
-      - name: Ensure remote dir and upload compose/env/config
-        shell: bash
+      # Убедимся, что папка есть, и скопируем compose/.env/config.json (если файлы существуют)
+      - name: Ensure remote dir and copy files
         run: |
-          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru "mkdir -p '${APP_DIR}'"
-          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no docker-compose.yml hassiy@course.prafdin.ru:"${APP_DIR}/docker-compose.yml"
-          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no .env hassiy@course.prafdin.ru:"${APP_DIR}/.env"
-          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no config.json hassiy@course.prafdin.ru:"${APP_DIR}/config.json"
+          ssh -o StrictHostKeyChecking=no -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" "mkdir -p '$APP_DIR'"
 
-      - name: Deploy (docker compose up -d)
-        shell: bash
-        run: |
-          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru bash -s <<'EOSSH'
-          set -euxo pipefail
+          # docker-compose.yml — обязателен
+          scp -P "$SERVER_PORT" -o StrictHostKeyChecking=no docker-compose.yml "$SERVER_USER@$SERVER_HOST:$APP_DIR/docker-compose.yml"
 
-          APP_DIR="${APP_DIR}"
-          OWNER_LC="${OWNER_LC}"
+          # .env и config.json — если есть в репо, скопируем; если нет — пропустим
+          if [ -f .env ]; then
+            scp -P "$SERVER_PORT" -o StrictHostKeyChecking=no .env "$SERVER_USER@$SERVER_HOST:$APP_DIR/.env"
+          fi
 
-          cd "${APP_DIR}"
+          if [ -f config.json ]; then
+            scp -P "$SERVER_PORT" -o StrictHostKeyChecking=no config.json "$SERVER_USER@$SERVER_HOST:$APP_DIR/config.json"
+          fi
 
-          echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${OWNER_LC}" --password-stdin
-
-          docker ps --format '{{.ID}} {{.Ports}}' \
-            | awk '$0 ~ /:8181->/ {print $1}' \
-            | xargs -r docker rm -f
-
-          # На всякий случай: если локально крутится uvicorn на 8181 — завершим его (без sudo)
-          pkill -f 'uvicorn .*--port 8181' || true
-
-          # Обновим образы и поднимем стэк
-          docker compose pull
-          docker compose up -d --remove-orphans
-
-          docker compose ps
-          sleep 2
-          curl -sI http://127.0.0.1:8181/ || true
-          EOSSH
+      # Деплой на сервере
+      - name: Deploy with Docker Compose on server
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          APP_DIR: ${{ env.APP_DIR }}
-          OWNER_LC: ${{ env.OWNER_LC }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" "
+            set -euxo pipefail
+            cd '$APP_DIR'
+
+            # GHCR login: имя владельца строго в нижнем регистре
+            echo '$GHCR_TOKEN' | docker login ghcr.io -u '$OWNER_LOWER' --password-stdin
+
+            # На всякий случай закрыть локальный uvicorn, который может занимать 8181 (из ЛР2)
+            pkill -f 'uvicorn .*--port 8181' || true
+
+            # Подтянуть свежие образы и поднять стек
+            docker compose pull
+            docker compose up -d --remove-orphans
+
+            # Быстрая проверка
+            docker compose ps
+            sleep 2
+            curl -sI http://127.0.0.1:8181/ || true
+          "
