@@ -1,0 +1,56 @@
+name: CD (compose over SSH)
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decode SSH key and test connection
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY_B64 }}" ]; then
+            echo "❌ SSH_PRIVATE_KEY_B64 is empty"; exit 1;
+          fi
+          echo "${{ secrets.SSH_PRIVATE_KEY_B64 }}" | base64 -d > key.pem
+          chmod 600 key.pem
+          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru 'echo "✅ SSH OK"'
+
+      - name: Set variables
+        run: |
+          echo "OWNER_LOWER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          echo "APP_DIR=/home/hassiy/apps/catty-reminders-app" >> $GITHUB_ENV
+
+      - name: Ensure remote dir + copy compose/.env
+        run: |
+          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no docker-compose.yml hassiy@course.prafdin.ru:${APP_DIR}/docker-compose.yml
+          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no .env hassiy@course.prafdin.ru:${APP_DIR}/.env
+          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no config.json hassiy@course.prafdin.ru:${APP_DIR}/config.json
+        continue-on-error: true
+
+      - name: Deploy via SSH (docker compose up -d)
+        run: |
+          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru "
+            set -euxo pipefail
+            mkdir -p ${APP_DIR} && cd ${APP_DIR}
+
+            echo '${{ secrets.GHCR_TOKEN }}' | docker login ghcr.io -u '${{ env.OWNER_LOWER }}' --password-stdin
+
+            sudo systemctl stop catty-reminders.service 2>/dev/null || true
+            sudo systemctl disable catty-reminders.service 2>/dev/null || true
+            sudo fuser -k 8181/tcp || true
+
+            docker compose pull
+            docker compose up -d --remove-orphans
+
+            docker compose ps
+            sleep 2
+            curl -sI http://127.0.0.1:8181/ || true
