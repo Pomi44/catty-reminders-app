@@ -14,61 +14,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Поднимем ssh-agent и загрузим приватный ключ из секретов
+      # --- 1. Добавляем SSH-ключ ---
       - name: Start ssh-agent and add key
         uses: webfactory/ssh-agent@v0.7.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      # Общие переменные
+      # --- 2. Устанавливаем переменные окружения ---
       - name: Set variables
         run: |
           OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "OWNER_LOWER=${OWNER_LOWER}" >> $GITHUB_ENV
           echo "IMAGE_NAME=ghcr.io/${OWNER_LOWER}/catty-reminders-app:latest" >> $GITHUB_ENV
           echo "APP_DIR=/home/hassiy/apps/catty-reminders-app" >> $GITHUB_ENV
-          echo "SERVER_USER=hassiy" >> $GITHUB_ENV
-          echo "SERVER_HOST=course.prafdin.ru" >> $GITHUB_ENV
-          echo "SERVER_PORT=2472" >> $GITHUB_ENV
 
-      # Убедимся, что папка есть, и скопируем compose/.env/config.json (если файлы существуют)
-      - name: Ensure remote dir and copy files
+      # --- 3. Создаем директорию на сервере и копируем файлы ---
+      - name: Ensure remote dir and copy compose
+        env:
+          SERVER_USER: hassiy
+          SERVER_HOST: course.prafdin.ru
+          SERVER_PORT: 2472
         run: |
-          ssh -o StrictHostKeyChecking=no -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" "mkdir -p '$APP_DIR'"
+          ssh -o StrictHostKeyChecking=no -p $SERVER_PORT $SERVER_USER@$SERVER_HOST "mkdir -p $APP_DIR"
+          scp -P $SERVER_PORT docker-compose.yml $SERVER_USER@$SERVER_HOST:$APP_DIR/docker-compose.yml
+          scp -P $SERVER_PORT .env $SERVER_USER@$SERVER_HOST:$APP_DIR/.env
+          scp -P $SERVER_PORT config.json $SERVER_USER@$SERVER_HOST:$APP_DIR/config.json
 
-          # docker-compose.yml — обязателен
-          scp -P "$SERVER_PORT" -o StrictHostKeyChecking=no docker-compose.yml "$SERVER_USER@$SERVER_HOST:$APP_DIR/docker-compose.yml"
-
-          # .env и config.json — если есть в репо, скопируем; если нет — пропустим
-          if [ -f .env ]; then
-            scp -P "$SERVER_PORT" -o StrictHostKeyChecking=no .env "$SERVER_USER@$SERVER_HOST:$APP_DIR/.env"
-          fi
-
-          if [ -f config.json ]; then
-            scp -P "$SERVER_PORT" -o StrictHostKeyChecking=no config.json "$SERVER_USER@$SERVER_HOST:$APP_DIR/config.json"
-          fi
-
-      # Деплой на сервере
+      # --- 4. Деплой через docker compose ---
       - name: Deploy with Docker Compose on server
         env:
+          SERVER_USER: hassiy
+          SERVER_HOST: course.prafdin.ru
+          SERVER_PORT: 2472
+          GHCR_USER: pomi44
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
-          ssh -o StrictHostKeyChecking=no -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" "
+          ssh -o StrictHostKeyChecking=no -p $SERVER_PORT $SERVER_USER@$SERVER_HOST "
             set -euxo pipefail
-            cd '$APP_DIR'
+            cd $APP_DIR
 
-            # GHCR login: имя владельца строго в нижнем регистре
-            echo '$GHCR_TOKEN' | docker login ghcr.io -u '$OWNER_LOWER' --password-stdin
+            echo \"$GHCR_TOKEN\" | docker login ghcr.io -u \"$GHCR_USER\" --password-stdin
 
-            # На всякий случай закрыть локальный uvicorn, который может занимать 8181 (из ЛР2)
-            pkill -f 'uvicorn .*--port 8181' || true
+            echo '🧹 Останавливаем процессы uvicorn, если они заняли порт 8181'
+            pkill -f 'uvicorn .*--port 8181' 2>/dev/null || true
+            docker rm -f catty-reminders || true
 
-            # Подтянуть свежие образы и поднять стек
+            echo '⬇️ Обновляем и запускаем compose'
             docker compose pull
             docker compose up -d --remove-orphans
 
-            # Быстрая проверка
+            echo '🔎 Проверка контейнеров:'
             docker compose ps
-            sleep 2
+            sleep 3
             curl -sI http://127.0.0.1:8181/ || true
           "
