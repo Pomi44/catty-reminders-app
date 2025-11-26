@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Decode SSH key and test connection
+      - name: Decode SSH key and test SSH
         shell: bash
         run: |
           if [ -z "${{ secrets.SSH_PRIVATE_KEY_B64 }}" ]; then
@@ -26,34 +26,46 @@ jobs:
 
       - name: Set variables
         run: |
-          echo "OWNER_LOWER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          echo "OWNER_LC=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
           echo "APP_DIR=/home/hassiy/apps/catty-reminders-app" >> $GITHUB_ENV
 
-      - name: Ensure remote dir + copy compose/.env
+      - name: Ensure remote dir and upload compose/env/config
+        shell: bash
         run: |
-          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no docker-compose.yml hassiy@course.prafdin.ru:${APP_DIR}/docker-compose.yml
-          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no .env hassiy@course.prafdin.ru:${APP_DIR}/.env
-          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no config.json hassiy@course.prafdin.ru:${APP_DIR}/config.json
-        continue-on-error: true
+          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru "mkdir -p '${APP_DIR}'"
+          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no docker-compose.yml hassiy@course.prafdin.ru:"${APP_DIR}/docker-compose.yml"
+          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no .env hassiy@course.prafdin.ru:"${APP_DIR}/.env"
+          scp -i key.pem -P 2472 -o StrictHostKeyChecking=no config.json hassiy@course.prafdin.ru:"${APP_DIR}/config.json"
 
-      - name: Deploy via SSH (docker compose up -d)
+      - name: Deploy (docker compose up -d)
+        shell: bash
         run: |
-          set -euo pipefail
-          OWNER_LOWER="${{ env.OWNER_LOWER }}"
-          APP_DIR="${{ env.APP_DIR }}"
-          GHCR_USER="${OWNER_LOWER}"
-          IMAGE="ghcr.io/${OWNER_LOWER}/catty-reminders-app:latest"
+          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru bash -s <<'EOSSH'
+          set -euxo pipefail
 
-          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru "bash -s" <<EOF
-          set -euo pipefail
+          APP_DIR="${APP_DIR}"
+          OWNER_LC="${OWNER_LC}"
 
-            sudo systemctl stop catty-reminders.service 2>/dev/null || true
-            sudo systemctl disable catty-reminders.service 2>/dev/null || true
-            sudo fuser -k 8181/tcp || true
+          cd "${APP_DIR}"
 
-            docker compose pull
-            docker compose up -d --remove-orphans
+          echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${OWNER_LC}" --password-stdin
 
-            docker compose ps
-            sleep 2
-            curl -sI http://127.0.0.1:8181/ || true
+          docker ps --format '{{.ID}} {{.Ports}}' \
+            | awk '$0 ~ /:8181->/ {print $1}' \
+            | xargs -r docker rm -f
+
+          # На всякий случай: если локально крутится uvicorn на 8181 — завершим его (без sudo)
+          pkill -f 'uvicorn .*--port 8181' || true
+
+          # Обновим образы и поднимем стэк
+          docker compose pull
+          docker compose up -d --remove-orphans
+
+          docker compose ps
+          sleep 2
+          curl -sI http://127.0.0.1:8181/ || true
+          EOSSH
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          APP_DIR: ${{ env.APP_DIR }}
+          OWNER_LC: ${{ env.OWNER_LC }}
