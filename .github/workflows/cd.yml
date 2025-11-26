@@ -38,11 +38,14 @@ jobs:
 
       - name: Deploy via SSH (docker compose up -d)
         run: |
-          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru "
-            set -euxo pipefail
-            mkdir -p ${APP_DIR} && cd ${APP_DIR}
+          set -euo pipefail
+          OWNER_LOWER="${{ env.OWNER_LOWER }}"
+          APP_DIR="${{ env.APP_DIR }}"
+          GHCR_USER="${OWNER_LOWER}"
+          IMAGE="ghcr.io/${OWNER_LOWER}/catty-reminders-app:latest"
 
-            echo '${{ secrets.GHCR_TOKEN }}' | docker login ghcr.io -u '${{ env.OWNER_LOWER }}' --password-stdin
+          ssh -i key.pem -p 2472 -o StrictHostKeyChecking=no hassiy@course.prafdin.ru "bash -s" <<EOF
+          set -euo pipefail
 
             sudo systemctl stop catty-reminders.service 2>/dev/null || true
             sudo systemctl disable catty-reminders.service 2>/dev/null || true
