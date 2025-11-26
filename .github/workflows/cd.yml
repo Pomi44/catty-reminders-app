@@ -37,7 +37,6 @@ jobs:
           ssh -o StrictHostKeyChecking=no -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" "mkdir -p '$APP_DIR'"
 
           scp -P "$SERVER_PORT" docker-compose.yml "$SERVER_USER@$SERVER_HOST:$APP_DIR/docker-compose.yml"
-          # .env должен лежать в корне репозитория
           scp -P "$SERVER_PORT" .env "$SERVER_USER@$SERVER_HOST:$APP_DIR/.env"
           scp -P "$SERVER_PORT" config.json "$SERVER_USER@$SERVER_HOST:$APP_DIR/config.json"
 
@@ -54,20 +53,22 @@ jobs:
 
             cd '$APP_DIR'
 
+            # логин в GHCR
             echo \"$GHCR_TOKEN\" | docker login ghcr.io -u \"$GHCR_USER\" --password-stdin
 
-            echo '🧹 Останавливаем процессы uvicorn, если они заняли порт 8181'
-            pkill -f 'uvicorn .*--port 8181' || true
+            echo '🧹 Останавливаем docker compose (если запущен)'
+            docker compose down || true
 
-            echo '🧹 Удаляем старый контейнер (если есть)'
-            docker rm -f catty-reminders || true
-
-            echo '⬇️ Тянем свежий образ и поднимаем docker compose'
+            echo '⬇️ Тянем свежие образы'
             docker compose pull
+
+            echo '🚀 Поднимаем стек'
             docker compose up -d --remove-orphans
 
             echo '📦 Текущее состояние сервисов:'
             docker compose ps
+
+            echo '🩺 Проверяем HTTP на 8181'
             sleep 2
             curl -sI http://127.0.0.1:8181/ || true
           "
